@@ -14,23 +14,24 @@ fn build_client(token: &str) -> Client {
     Client::builder().default_headers(h).build().unwrap()
 }
 
-fn get_movie_id(c: &Client) -> String {
+fn get_movie_id(c: &Client, user: &str) -> Option<String> {
     let resp = c
-        .get(&format!("{}/users/equall2/current_live", BASE_URL))
+        .get(&format!("{}/users/{}/current_live", BASE_URL, user))
         .send()
         .unwrap();
-    if !resp.status().is_success() {
-        panic!("Cannot retrieve movie id, maybe because the user is not streaming now: {}", resp.text().unwrap());
+    if resp.status().is_success() {
+        let json: serde_json::Value = resp.json().unwrap();
+        Some(json["movie"]["id"].as_str().unwrap().to_owned())
+    } else {
+        None
     }
-    let json: serde_json::Value = resp.json().unwrap();
-    json["movie"]["id"].as_str().unwrap().to_owned()
 }
 
 fn get_comments(
     c: &Client,
     movie_id: String,
     last_id: Option<String>,
-) -> (Vec<String>, Option<String>) {
+) -> (Option<Vec<String>>, Option<String>) {
     let spec_slice = match &last_id {
         Some(i) => format!("?slice_id={}", i),
         None => String::new(),
@@ -48,14 +49,14 @@ fn get_comments(
         let json = resp_com.json::<serde_json::Value>().unwrap();
         let comments = json["comments"].as_array().unwrap();
         (
-            comments.into_iter().rev().map(|c| c["message"].as_str().unwrap().to_owned()).collect(),
+            Some(comments.into_iter().rev().map(|c| c["message"].as_str().unwrap().to_owned()).collect()),
             match comments.first() {
                 Some(i) => Some(i["id"].as_str().unwrap().to_owned()),
                 None => last_id,
             },
         )
     } else {
-        panic!("Cannot retrieve comments: {}", resp_com.text().unwrap());
+        (None, last_id)
     }
 }
 
@@ -69,15 +70,23 @@ fn main() {
     let mut last_id = None;
     loop {
         eprintln!("retrive begin");
-        let id = get_movie_id(&client);
-        let (comments, new_id) = get_comments(&client, id, last_id.clone());
-        last_id = new_id;
+        let id = get_movie_id(&client, "equall2");
+        if let Some(id) = id {
+            let (comments, new_id) = get_comments(&client, id, last_id.clone());
+            last_id = new_id;
 
-        for c in comments {
-            println!("{}", c);
+            if let Some(cs) = comments {
+                eprintln!("retrieved {} comments", cs.len());
+                for c in cs {
+                    println!("{}", c);
+                }
+            } else {
+                eprintln!("!! cannot retrieve comments");
+            }
+        } else {
+            eprintln!("!! cannot retrieve movie id");
         }
 
-        eprintln!("retrive end");
-        std::thread::sleep(std::time::Duration::from_secs(5));
+        std::thread::sleep(std::time::Duration::from_secs(10));
     }
 }
