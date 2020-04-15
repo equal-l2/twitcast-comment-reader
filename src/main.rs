@@ -24,12 +24,11 @@ struct TwitcastError {
 }
 
 async fn get_movie_id(c: &Client, user: &str) -> Option<String> {
-    let resp = c
+    let json: serde_json::Value = c
         .get(&format!("{}/users/{}/current_live", BASE_URL, user))
         .send()
         .await
-        .expect("Failed to send a request while getting movie id");
-    let json: serde_json::Value = resp
+        .expect("Failed to send a request while getting movie id")
         .json()
         .await
         .expect("Got a non-json response while getting movie id");
@@ -59,15 +58,14 @@ async fn get_comments(
         Some(i) => format!("?slice_id={}", i),
         None => String::new(),
     };
-    let resp = c
+    let json: serde_json::Value = c
         .get(&format!(
             "{}/movies/{}/comments{}",
             BASE_URL, movie_id, spec_slice
         ))
         .send()
         .await
-        .expect("Failed to send a request while getting comments");
-    let json: serde_json::Value = resp
+        .expect("Failed to send a request while getting comments")
         .json()
         .await
         .expect("Got a non-json response while getting comments");
@@ -76,7 +74,7 @@ async fn get_comments(
         (
             Some(
                 comments
-                    .into_iter()
+                    .iter()
                     .rev()
                     .map(|c| c["message"].as_str().unwrap().to_owned())
                     .collect(),
@@ -160,20 +158,23 @@ async fn get_token(client_id: String, client_secret: String) -> String {
         stopper: tx,
     });
 
-    use warp::Filter;
-    let bundle2 = bundle.clone();
-    let bundle_handle = warp::any().map(move || bundle2.clone());
+    {
+        use warp::Filter;
+        let bundle2 = bundle.clone();
+        let bundle_handle = warp::any().map(move || bundle2.clone());
 
-    let token = warp::path::end()
-        .and(warp::query::query::<CodeParam>())
-        .and(bundle_handle)
-        .and_then(callback_handler);
+        let token = warp::path::end()
+            .and(warp::query::query::<CodeParam>())
+            .and(bundle_handle)
+            .and_then(callback_handler);
 
-    let (_, svr) =
-        warp::serve(token).bind_with_graceful_shutdown(([127, 0, 0, 1], 8000), async move {
-            rx.recv().await;
-        });
-    svr.await;
+        let (_, svr) =
+            warp::serve(token).bind_with_graceful_shutdown(([127, 0, 0, 1], 8000), async move {
+                rx.recv().await;
+            });
+
+        svr.await;
+    }
 
     bundle.token.get().unwrap().clone()
 }
