@@ -101,25 +101,29 @@ async fn get_comments(
     }
 }
 
+use tokio::sync::mpsc;
+use std::sync::Arc;
 
-static TOKEN: OnceCell<String> = OnceCell::new();
-static CLIENT_ID: OnceCell<String> = OnceCell::new();
-static CLIENT_SECRET: OnceCell<String> = OnceCell::new();
-static STOPPER: OnceCell<tokio::sync::mpsc::Sender<()>> = OnceCell::new();
+struct DataBundle {
+    token: OnceCell<String>,
+    client_id: String,
+    client_secret: String,
+    stopper: mpsc::Sender<()>
+}
 
 #[derive(Deserialize)]
 struct CodeParam {
     code: String,
 }
 
-async fn callback_handler(q: CodeParam) -> Result<String, warp::reject::Rejection> {
+async fn callback_handler(q: CodeParam, data: Arc<DataBundle>) -> Result<String, warp::reject::Rejection> {
     let code: String = q.code.clone();
     let c = Client::new();
     let params = [
         ("code", &*code),
         ("grant_type", "authorization_code"),
-        ("client_id", &*CLIENT_ID.get().unwrap()),
-        ("client_secret", &*CLIENT_SECRET.get().unwrap()),
+        ("client_id", &*data.client_id),
+        ("client_secret", &*data.client_secret),
         ("redirect_uri", "http://localhost:8000/"),
     ];
     let json = c
@@ -132,12 +136,12 @@ async fn callback_handler(q: CodeParam) -> Result<String, warp::reject::Rejectio
         .await
         .expect("Got non-json response");
     if let Some(i) = json.get("access_token") {
-        TOKEN.set(i.as_str().unwrap().to_owned()).unwrap();
+        data.token.set(i.as_str().unwrap().to_owned()).unwrap();
     } else {
         panic!("Unexpected response : {}", json);
     }
 
-    let mut stopper = STOPPER.get().unwrap().clone();
+    let mut stopper = data.stopper.clone();
     stopper.send(()).await.unwrap();
 
     Ok(
@@ -146,14 +150,23 @@ async fn callback_handler(q: CodeParam) -> Result<String, warp::reject::Rejectio
     )
 }
 
-async fn get_token() -> String {
+async fn get_token(client_id: String, client_secret: String) -> String {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
-    STOPPER.set(tx).unwrap();
+
+    let bundle: Arc<DataBundle> = Arc::new(DataBundle {
+        token: OnceCell::new(),
+        client_id,
+        client_secret,
+        stopper: tx,
+    });
 
     use warp::Filter;
+    let bundle2 = bundle.clone();
+    let bundle_handle = warp::any().map(move || bundle2.clone());
 
     let token = warp::path::end()
-        .and(warp::query::query())
+        .and(warp::query::query::<CodeParam>())
+        .and(bundle_handle)
         .and_then(callback_handler);
 
     let (_, svr) =
@@ -162,36 +175,35 @@ async fn get_token() -> String {
         });
     svr.await;
 
-    TOKEN.get().unwrap().clone()
+    bundle.token.get().unwrap().clone()
 }
 
 #[tokio::main]
 async fn main() {
-    CLIENT_ID
-        .set({
+    let client_id =
+        {
             let mut s = std::fs::read_to_string("client_id.txt").unwrap();
             s.pop();
             s
-        })
-        .unwrap();
+        };
 
-    CLIENT_SECRET
-        .set({
+    let client_secret =
+        {
             let mut s = std::fs::read_to_string("client_secret.txt").unwrap();
             s.pop();
             s
-        })
-        .unwrap();
+        }
+        ;
 
     eprintln!("Web browser will open to log you in, follow the instructions there");
     open::that(format!(
         "{}/oauth2/authorize?client_id={}&response_type=code",
         BASE_URL,
-        CLIENT_ID.get().unwrap()
+        client_id
     ))
     .unwrap();
 
-    let token = get_token().await;
+    let token = get_token(client_id, client_secret).await;
     eprintln!("retrieved access token");
 
     let client = build_client(&token);
