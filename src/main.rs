@@ -1,5 +1,6 @@
 use reqwest::Client;
 use once_cell::sync::OnceCell;
+use serde::Deserialize;
 
 const BASE_URL: &str = "https://apiv2.twitcasting.tv";
 
@@ -15,6 +16,13 @@ fn build_client(token: &str) -> Client {
     Client::builder().default_headers(h).build().unwrap()
 }
 
+#[derive(Deserialize, Debug)]
+struct TwitcastError {
+    code: u32,
+    message: String,
+    details: Option<serde_json::Value>
+}
+
 async fn get_movie_id(c: &Client, user: &str) -> Option<String> {
     let resp = c
         .get(&format!("{}/users/{}/current_live", BASE_URL, user))
@@ -27,11 +35,15 @@ async fn get_movie_id(c: &Client, user: &str) -> Option<String> {
         .expect("Got a non-json response while getting movie id");
     if let Some(movie) = json.get("movie") {
         Some(movie["id"].as_str().unwrap().to_owned())
-    } else if let Some(i) = json.get("error") {
-        if i["code"] == "404" {
-            None
+    } else if let Some(error) = json.get("error") {
+        if let Ok(i) = serde_json::from_value::<TwitcastError>(error.clone()) {
+            if i.code == 404 {
+                None
+            } else {
+                panic!("Unexpected error : {:?}", i);
+            }
         } else {
-            panic!("Unexpected error : {}", i);
+            panic!("Got a corrupted json while getting movie id : {}", json);
         }
     } else {
         panic!("Got a corrupted json while getting movie id : {}", json);
@@ -74,11 +86,15 @@ async fn get_comments(
                 None => last_id,
             },
         )
-    } else if let Some(i) = json.get("error") {
-        if i["code"] == "404" {
-            (None, last_id)
+    } else if let Some(error) = json.get("error") {
+        if let Ok(i) = serde_json::from_value::<TwitcastError>(error.clone()) {
+            if i.code == 404 {
+                (None, last_id)
+            } else {
+                panic!("Unexpected error : {:?}", i);
+            }
         } else {
-            panic!("Unexpected error : {}", i);
+            panic!("Got a corrupted json while getting comments : {}", json);
         }
     } else {
         panic!("Got a corrupted json while getting comments : {}", json);
@@ -91,7 +107,7 @@ static CLIENT_ID: OnceCell<String> = OnceCell::new();
 static CLIENT_SECRET: OnceCell<String> = OnceCell::new();
 static STOPPER: OnceCell<tokio::sync::mpsc::Sender<()>> = OnceCell::new();
 
-#[derive(serde::Deserialize)]
+#[derive(Deserialize)]
 struct CodeParam {
     code: String,
 }
